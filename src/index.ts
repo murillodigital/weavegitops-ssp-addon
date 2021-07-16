@@ -1,6 +1,5 @@
 import { ClusterAddOn, ClusterInfo, ClusterPostDeploy, Team } from '@shapirov/cdk-eks-blueprint';
-import { AWSError, SecretsManager } from "aws-sdk";
-import { GetSecretValueResponse } from "aws-sdk/clients/secretsmanager";
+import { SecretsManager } from "aws-sdk";
 
 export interface BootstrapRepository {
     /**
@@ -40,40 +39,33 @@ export class WeaveGitOpsAddOn implements ClusterAddOn, ClusterPostDeploy {
 
     readonly namespace: string;
     readonly bootstrapRepository: BootstrapRepository;
+    debugMode: boolean;
 
-    constructor(bootstrapRepository: BootstrapRepository, namespace?: string) {
+    constructor(bootstrapRepository: BootstrapRepository, namespace?: string, debugMode?: false) {
         this.namespace = namespace ?? "wego-system";
         this.bootstrapRepository = bootstrapRepository;
+        this.debugMode = debugMode ?? false;
     }
 
-    getSshKeyFromSecret(secretName: string): void {
-        const client = new SecretsManager();
-        let secret = "";
-        client.getSecretValue({ SecretId: secretName }, function(err: AWSError, data: GetSecretValueResponse) {
-            if (err) {
-                if (err.code === 'DecryptionFailureException')
-                    throw err;
-                else if (err.code === 'InternalServiceErrorException')
-                    throw err;
-                else if (err.code === 'InvalidParameterException')
-                    throw err;
-                else if (err.code === 'InvalidRequestException')
-                    throw err;
-                else if (err.code === 'ResourceNotFoundException')
-                    throw err;
-            } else {
-                if ('SecretString' in data) {
-                    secret = data.SecretString ?? "";
-                } else {
-                    const secretDataBase64String = data.SecretBinary ?? "";
-                    secret = secretDataBase64String.toString();
+    getSshKeyFromSecret = async (secretName: string, region: string): Promise<void> => {
+        const client = new SecretsManager({ region: region });
+        let secretObject: any = {};
+        try {
+            let response = await client.getSecretValue({ SecretId: secretName }).promise();
+            if (response) {
+                if (response.SecretString) {
+                    secretObject = JSON.parse(response.SecretString);
+                } else if (response.SecretBinary) {
+                    secretObject = JSON.parse(response.SecretBinary.toString());
                 }
             }
-        });
-        const secretObject = JSON.parse(secret);
-        this.bootstrapRepository.privateKey = secretObject.private_key;
-        this.bootstrapRepository.publicKey = secretObject.public_key;
-        this.bootstrapRepository.knownHosts = secretObject.known_hosts;
+            this.bootstrapRepository.privateKey = secretObject.private_key;
+            this.bootstrapRepository.publicKey = secretObject.public_key;
+            this.bootstrapRepository.knownHosts = secretObject.known_hosts;
+        } catch (error) {
+            console.log(error);
+            throw error;
+        }
     }
 
     base64EncodeContents(contents: string) {
@@ -85,7 +77,7 @@ export class WeaveGitOpsAddOn implements ClusterAddOn, ClusterPostDeploy {
             clusterInfo.cluster.addHelmChart("weave-gitops-core", {
                 chart: "wego-core",
                 repository: "https://murillodigital.github.io/wego-helm",
-                version: '0.0.5',
+                version: '0.0.1',
                 namespace: this.namespace,
             });
         } catch (err) {
@@ -93,12 +85,12 @@ export class WeaveGitOpsAddOn implements ClusterAddOn, ClusterPostDeploy {
         }
     }
 
-    postDeploy(clusterInfo: ClusterInfo, teams: Team[]): void {
+    async postDeploy(clusterInfo: ClusterInfo, teams: Team[]): Promise<void> {
         try {
-            if (this.bootstrapRepository.secretName) {  
-                this.getSshKeyFromSecret(this.bootstrapRepository.secretName);
+            if (this.bootstrapRepository.secretName) {
+                await this.getSshKeyFromSecret(this.bootstrapRepository.secretName, clusterInfo.cluster.stack.region);
             }
-            if (!!this.bootstrapRepository.privateKey || !!this.bootstrapRepository.knownHosts) {
+            if (!this.bootstrapRepository.privateKey || !this.bootstrapRepository.knownHosts) {
                 throw "Required details for bootstrap repository access are missing, aborting";
             }
             clusterInfo.cluster.addHelmChart("weave-gitops-application", {

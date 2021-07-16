@@ -1,6 +1,6 @@
 {
   "name": "@murillodigital/weavegitops-ssp-addon",
-  "version": "0.0.3",
+  "version": "0.0.5",
   "description": "WeaveGitOps Core Addon for AWS SSP CDK Platform",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
